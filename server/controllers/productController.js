@@ -186,58 +186,50 @@ exports.getMyProducts = async (req, res) => {
 };
 
 // ============================================================
-// AI DESCRIPTION GENERATOR
+// AI DESCRIPTION GENERATOR — IMPROVED
 // ============================================================
-// NOTE: The old api-inference.huggingface.co endpoint has been deprecated.
-// Using the new router.huggingface.co with Together provider + Kimi-K2.6 VLM.
-const HF_VLM_URL = 'https://router.huggingface.co/together/v1/chat/completions';
-const HF_VLM_MODEL = 'moonshotai/Kimi-K2.6';
+// The old api-inference.huggingface.co is deprecated (returns 404).
+// Using the new HF Router with Kimi VLM for high-quality descriptions.
+// Primary: Kimi-K2.5 (faster) | Fallback: Kimi-K2.6
 const HF_API_KEY = process.env.HUGGING_FACE_API_KEY;
 
+const HF_PROVIDERS = [
+  { url: 'https://router.huggingface.co/together/v1/chat/completions', model: 'moonshotai/Kimi-K2.5', name: 'together/K2.5' },
+  { url: 'https://router.huggingface.co/together/v1/chat/completions', model: 'moonshotai/Kimi-K2.6', name: 'together/K2.6' },
+];
+
+// ── Expanded category map for campus products ─────────────────
 const categoryMap = {
-  'book': 'Books',
-  'textbook': 'Books',
-  'novel': 'Books',
-  'phone': 'Electronics',
-  'laptop': 'Electronics',
-  'computer': 'Electronics',
-  'headphone': 'Electronics',
-  'speaker': 'Electronics',
-  'tablet': 'Electronics',
-  'camera': 'Electronics',
-  'earphone': 'Electronics',
-  'earbuds': 'Electronics',
-  'charger': 'Electronics',
-  'keyboard': 'Electronics',
-  'mouse': 'Electronics',
-  'monitor': 'Electronics',
-  'shirt': 'Clothing',
-  'pants': 'Clothing',
-  'dress': 'Clothing',
-  'jacket': 'Clothing',
-  'shoe': 'Clothing',
-  'uniform': 'Clothing',
-  'hoodie': 'Clothing',
-  'bed': 'Hostel',
-  'chair': 'Hostel',
-  'desk': 'Hostel',
-  'lamp': 'Hostel',
-  'table': 'Hostel',
-  'bedsheet': 'Hostel',
-  'pillow': 'Hostel',
-  'mattress': 'Hostel',
-  'ball': 'Sports',
-  'racket': 'Sports',
-  'bat': 'Sports',
-  'yoga': 'Sports',
-  'cricket': 'Sports',
-  'football': 'Sports',
-  'badminton': 'Sports',
-  'notebook': 'Stationery',
-  'pen': 'Lab',
-  'microscope': 'Lab',
-  'calculator': 'Lab',
-  'compass': 'Lab',
+  // Books
+  'book': 'Books', 'textbook': 'Books', 'novel': 'Books',
+  'guide': 'Books', 'manual': 'Books', 'edition': 'Books',
+  // Electronics
+  'phone': 'Electronics', 'laptop': 'Electronics', 'computer': 'Electronics',
+  'headphone': 'Electronics', 'headphones': 'Electronics',
+  'speaker': 'Electronics', 'tablet': 'Electronics', 'camera': 'Electronics',
+  'earphone': 'Electronics', 'earbuds': 'Electronics', 'charger': 'Electronics',
+  'keyboard': 'Electronics', 'mouse': 'Electronics', 'monitor': 'Electronics',
+  'mobile': 'Electronics', 'iphone': 'Electronics', 'samsung': 'Electronics',
+  'adapter': 'Electronics', 'cable': 'Electronics', 'usb': 'Electronics',
+  // Clothing
+  'shirt': 'Clothing', 'pants': 'Clothing', 'jeans': 'Clothing',
+  'dress': 'Clothing', 'jacket': 'Clothing', 'coat': 'Clothing',
+  'shoe': 'Clothing', 'shoes': 'Clothing', 'uniform': 'Clothing',
+  'hoodie': 'Clothing', 'saree': 'Clothing', 'kurta': 'Clothing',
+  // Hostel
+  'bed': 'Hostel', 'chair': 'Hostel', 'desk': 'Hostel',
+  'lamp': 'Hostel', 'table': 'Hostel', 'bedsheet': 'Hostel',
+  'pillow': 'Hostel', 'mattress': 'Hostel', 'cushion': 'Hostel',
+  // Sports
+  'ball': 'Sports', 'racket': 'Sports', 'bat': 'Sports',
+  'yoga': 'Sports', 'cricket': 'Sports', 'football': 'Sports',
+  'badminton': 'Sports', 'bicycle': 'Sports', 'skateboard': 'Sports',
+  // Stationery
+  'notebook': 'Stationery', 'pen': 'Stationery', 'pencil': 'Stationery',
+  'paper': 'Stationery', 'ruler': 'Stationery', 'eraser': 'Stationery',
+  // Lab
+  'microscope': 'Lab', 'calculator': 'Lab', 'compass': 'Lab',
+  'scale': 'Lab', 'beaker': 'Lab', 'flask': 'Lab',
 };
 
 const detectCategory = (description) => {
@@ -248,6 +240,77 @@ const detectCategory = (description) => {
   return 'Others';
 };
 
+// ── VLM prompt engineered for campus marketplace descriptions ──
+const VLM_PROMPT = `You are writing a product listing for CampusCart, a college campus marketplace where students buy and sell used items.
+
+Look at this image and write a 1-2 sentence product description. Include:
+- What the item is (be specific — e.g. "GATE exam preparation book" not just "a book")
+- Color or appearance
+- Apparent condition (new, used, good condition, slightly worn, etc.)
+- Brand name if visible
+- Any notable features
+
+Examples of GOOD descriptions:
+- "Used GATE exam preparation book by Made Easy, in good condition with some highlighting on pages."
+- "Black Sony WH-1000XM4 wireless headphones with carrying case, lightly used."
+- "Blue denim jeans, waist 32, barely worn, no stains or tears."
+
+Be specific and helpful. Do NOT say "a product image" or anything generic. Do NOT include any reasoning, thinking, or explanation — just the description.`;
+
+// ── Call VLM with fallback across providers ─────────────────────
+async function callVLM(imageUrl) {
+  let lastError = null;
+
+  for (const provider of HF_PROVIDERS) {
+    try {
+      console.log(`[AI] Trying ${provider.name}...`);
+      const response = await axios.post(
+        provider.url,
+        {
+          model: provider.model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: VLM_PROMPT },
+                { type: 'image_url', image_url: { url: imageUrl } }
+              ]
+            }
+          ],
+          // Kimi is a thinking model: uses ~500-1000 tokens on reasoning
+          // before generating content. Must be high enough for both.
+          max_tokens: 2000
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${HF_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        }
+      );
+
+      const content = (response.data?.choices?.[0]?.message?.content || '').trim();
+
+      // Reject generic / empty descriptions — try next provider
+      if (!content || content.length < 10 || /^a product/i.test(content)) {
+        throw new Error('Description too generic, trying next provider');
+      }
+
+      console.log(`[AI] ${provider.name} succeeded: "${content.substring(0, 80)}..."`);
+      return { description: content, provider: provider.name };
+    } catch (err) {
+      console.warn(`[AI] ${provider.name} failed:`, err.response?.data?.error || err.message);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('All providers failed');
+}
+
+// ============================================================
+// POST /api/products/generate-description
+// ============================================================
 exports.generateDescription = async (req, res) => {
   try {
     const { imageUrl } = req.body;
@@ -263,71 +326,31 @@ exports.generateDescription = async (req, res) => {
       });
     }
 
-    // 🔥 Convert base64 → buffer
-    const base64Data = imageUrl.replace(/^data:image\/\w+;base64,/, '');
-    const imageBuffer = Buffer.from(base64Data, 'base64');
-
-    // 🔥 FORCE absolute request (fixes your main bug)
-    const response = await axios({
-      method: "POST",
-      url: "https://api-inference.huggingface.co/models/nlpconnect/vit-gpt2-image-captioning",
-      data: imageBuffer,
-      headers: {
-      Authorization: `Bearer ${HF_API_KEY}`,
-      "Content-Type": "application/octet-stream",
-      "Accept": "application/json",
-      "x-wait-for-model": "true"
-    },
-      timeout:   45000,
-    });
-
-    const aiDescription =
-      response.data?.[0]?.generated_text ||
-      response.data?.[0]?.caption ||
-      'A product image';
-
-    const choice = response.data?.choices?.[0]?.message;
-    const aiDescription = (choice?.content || '').trim() || 'A product image';
-    const suggestedCategory = detectCategory(aiDescription);
+    const { description, provider } = await callVLM(imageUrl);
+    const suggestedCategory = detectCategory(description);
 
     res.json({
-      description: aiDescription,
+      description,
       category: suggestedCategory,
-      confidence: 'high'
+      confidence: 'high',
+      model: provider
     });
 
   } catch (err) {
     console.error('generateDescription error:', err.response?.data || err.message);
-    
-    // Check if model is loading (common with free HF API)
+
     if (err.response?.status === 503) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         msg: 'AI model is loading, please try again in ~20 seconds.',
         error: 'Model loading',
         fallback: true
       });
     }
 
-    // Graceful fallback
-    res.status(500).json({ 
-      msg: 'AI generation failed',
+    res.status(500).json({
+      msg: 'Could not generate description. Please write it manually.',
       error: err.response?.data?.error?.message || err.response?.data?.error || err.message,
       fallback: true
-    // Provide a more descriptive error message to the frontend
-    let errorMessage = 'AI generation failed. Please try again.';
-    const hfData = err.response?.data;
-    
-    if (hfData) {
-      if (typeof hfData.error === 'string') {
-        errorMessage = hfData.error; // e.g. "Model is currently loading"
-      } else if (hfData.msg) {
-        errorMessage = hfData.msg;
-      }
-    }
-
-    res.status(500).json({
-      msg: errorMessage,
-      error: err.response?.data || err.message
     });
   }
 };
